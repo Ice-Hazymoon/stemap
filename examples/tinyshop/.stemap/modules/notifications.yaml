@@ -1,0 +1,20 @@
+id: notifications
+title: Notifications
+oneLine:
+  text: The receipt queue and its worker.
+  evidence:
+    - path: src/notify/receipts.ts
+      contains: new Queue("receipts")
+paths:
+  - src/notify/**
+summary:
+  - text: The worker retries a refused mail five times.
+    evidence:
+      - path: src/notify/receipts.ts
+        contains: "{ attempts: 5, backoff"
+flows: []
+cautions: []
+children: []
+relations: []
+terms: []
+qa: []

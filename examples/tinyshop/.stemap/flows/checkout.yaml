@@ -1,0 +1,160 @@
+id: checkout
+title: Check out a cart
+actor: Buyer
+goal: Turn a cart into a pending order with reserved stock and a link to pay.
+after: []
+steps:
+  - id: send-cart
+    title: Send the cart
+    lane: user
+    module: orders
+    kind: start
+    text: The buyer sends an email address and the cart lines to POST /checkout.
+    evidence:
+      - path: src/routes/checkout.ts
+        contains: .post("/", async (c)
+    writes: []
+    next:
+      - to: check-cart
+        failure: false
+  - id: check-cart
+    title: Has the cart got lines?
+    lane: api
+    module: orders
+    kind: decision
+    text: The route refuses a cart with no lines.
+    evidence:
+      - path: src/routes/checkout.ts
+        contains: lines.length === 0
+    writes: []
+    next:
+      - to: reserve
+        when: The cart has lines
+        failure: false
+      - to: cart-empty
+        when: The cart is empty
+        failure: true
+  - id: cart-empty
+    title: Refuse the empty cart
+    lane: api
+    module: orders
+    kind: failure
+    text: The route answers 400 with `cart_empty` and writes nothing.
+    evidence:
+      - path: src/routes/checkout.ts
+        contains: '"cart_empty"'
+    writes: []
+    next: []
+  - id: reserve
+    title: Is every line in stock?
+    lane: service
+    module: catalog
+    kind: decision
+    text: The service takes stock for a line only when enough remains.
+    evidence:
+      - path: src/catalog/stock.ts
+        contains: gte(products.stock, line.quantity)
+    writes:
+      - target: products
+        change: Stock goes down by the quantity
+    next:
+      - to: create-order
+        when: Every line has stock
+        failure: false
+      - to: out-of-stock
+        when: A product is short
+        failure: true
+  - id: out-of-stock
+    title: Give the stock back
+    lane: service
+    module: catalog
+    kind: failure
+    text: The service gives back what the earlier lines took, and the route answers 409.
+    evidence:
+      - path: src/catalog/stock.ts
+        contains: await releaseStock(reserved)
+      - path: src/routes/checkout.ts
+        contains: '"out_of_stock"'
+    writes:
+      - target: products
+        change: Stock goes back up
+    next: []
+  - id: create-order
+    title: Create a pending order
+    lane: service
+    module: orders
+    kind: action
+    text: The service writes the order as `pending` with its lines and total.
+    evidence:
+      - path: src/orders/orders.ts
+        contains: 'status: "pending"'
+      - path: src/orders/orders.ts
+        contains: db.insert(orderLines)
+    writes:
+      - target: orders
+        change: New row, status pending
+      - target: order_lines
+        change: One row for each cart line
+    next:
+      - to: start-payment
+        failure: false
+  - id: start-payment
+    title: Ask for a payment session
+    lane: external
+    module: payments
+    kind: action
+    text: The service asks the payment provider for a session for the order total.
+    evidence:
+      - path: src/payments/provider.ts
+        contains: "`${API}/sessions`"
+    writes: []
+    next:
+      - to: session-ok
+        failure: false
+  - id: session-ok
+    title: Did the provider answer?
+    lane: api
+    module: payments
+    kind: decision
+    text: The route checks that the provider gave a session.
+    evidence:
+      - path: src/routes/checkout.ts
+        contains: if (!session.ok)
+    writes: []
+    next:
+      - to: pay-link
+        when: A session came back
+        failure: false
+      - to: undo
+        when: The provider refused
+        failure: true
+  - id: undo
+    title: Undo the order
+    lane: service
+    module: orders
+    kind: failure
+    text: The route cancels the order, gives the stock back and answers 502.
+    evidence:
+      - path: src/routes/checkout.ts
+        contains: await cancelOrder(order.id)
+      - path: src/routes/checkout.ts
+        contains: await releaseStock(reservation.lines)
+      - path: src/routes/checkout.ts
+        contains: '"payment_unavailable"'
+    writes:
+      - target: orders
+        change: Status becomes cancelled
+      - target: products
+        change: Stock goes back up
+    next: []
+  - id: pay-link
+    title: Return the payment link
+    lane: api
+    module: orders
+    kind: end
+    text: The route answers 201 with the order id and the payment link.
+    evidence:
+      - path: src/routes/checkout.ts
+        contains: "payUrl: session.url"
+    writes: []
+    next: []

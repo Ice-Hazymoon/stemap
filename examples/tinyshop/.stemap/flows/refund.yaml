@@ -1,0 +1,151 @@
+id: refund
+title: Refund an order
+actor: Support agent
+goal: Give the money back for a paid order and return its stock.
+after:
+  - order-fulfilment
+steps:
+  - id: ask
+    title: Ask for a refund
+    lane: user
+    module: orders
+    kind: start
+    text: The agent posts to POST /orders/:id/refund.
+    evidence:
+      - path: src/routes/orders.ts
+        contains: .post("/:id/refund", async (c)
+    writes: []
+    next:
+      - to: is-paid
+        failure: false
+  - id: is-paid
+    title: Is the order paid?
+    lane: service
+    module: orders
+    kind: decision
+    text: The service refuses an order that is not `paid`.
+    evidence:
+      - path: src/orders/refund.ts
+        contains: order?.status !== "paid"
+    writes: []
+    next:
+      - to: in-window
+        when: The order is paid
+        failure: false
+      - to: not-paid
+        when: Any other status
+        failure: true
+  - id: not-paid
+    title: "Refuse: not paid"
+    lane: api
+    module: orders
+    kind: failure
+    text: The route answers 409 with `not_paid`.
+    evidence:
+      - path: src/orders/refund.ts
+        contains: 'status: "not_paid"'
+      - path: src/routes/orders.ts
+        contains: "c.json({ error: result.status }"
+    writes: []
+    next: []
+  - id: in-window
+    title: Is it within 30 days?
+    lane: service
+    module: orders
+    kind: decision
+    text: The service refuses a refund 30 days after the order.
+    evidence:
+      - path: src/orders/refund.ts
+        contains: order.createdAt.getTime()
+    writes: []
+    next:
+      - to: refund-money
+        when: Inside the window
+        failure: false
+      - to: too-late
+        when: Past the window
+        failure: true
+  - id: too-late
+    title: "Refuse: too late"
+    lane: api
+    module: orders
+    kind: failure
+    text: The route answers 409 with `too_late`.
+    evidence:
+      - path: src/orders/refund.ts
+        contains: 'status: "too_late"'
+    writes: []
+    next: []
+  - id: refund-money
+    title: Refund at the provider
+    lane: external
+    module: payments
+    kind: action
+    text: The service asks the provider to return the order total.
+    evidence:
+      - path: src/payments/provider.ts
+        contains: "`${API}/payments/${providerRef}/refund`"
+      - path: src/orders/refund.ts
+        contains: await refundPayment(payment!.providerRef, order.totalCents)
+    writes: []
+    next:
+      - to: money-ok
+        failure: false
+  - id: money-ok
+    title: Did the refund go through?
+    lane: service
+    module: payments
+    kind: decision
+    text: The service stops when the provider refuses, so stock stays where it is.
+    evidence:
+      - path: src/orders/refund.ts
+        contains: if (!refunded)
+    writes: []
+    next:
+      - to: restock
+        when: The provider accepted
+        failure: false
+      - to: provider-failed
+        when: The provider refused
+        failure: true
+  - id: provider-failed
+    title: Report the failure
+    lane: api
+    module: payments
+    kind: failure
+    text: The route answers 502 with `provider_failed`.
+    evidence:
+      - path: src/orders/refund.ts
+        contains: '"provider_failed"'
+      - path: src/routes/orders.ts
+        contains: 'result.status === "provider_failed" ? 502 : 409'
+    writes: []
+    next: []
+  - id: restock
+    title: Return the stock
+    lane: service
+    module: catalog
+    kind: action
+    text: The service gives the stock of each order line back.
+    evidence:
+      - path: src/orders/refund.ts
+        contains: await releaseStock(
+    writes:
+      - target: products
+        change: Stock goes back up
+    next:
+      - to: mark-refunded
+        failure: false
+  - id: mark-refunded
+    title: Mark the order refunded
+    lane: service
+    module: orders
+    kind: end
+    text: The service sets the order status to `refunded`.
+    evidence:
+      - path: src/orders/refund.ts
+        contains: 'status: "refunded" })'
+    writes:
+      - target: orders
+        change: Status becomes refunded
+    next: []

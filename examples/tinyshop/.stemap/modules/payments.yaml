@@ -1,0 +1,37 @@
+id: payments
+title: Payments
+oneLine:
+  text: The provider client, and the webhook that turns its events into payments.
+  evidence:
+    - path: src/payments/provider.ts
+      contains: export async function startPayment
+    - path: src/routes/webhooks.ts
+      contains: .post("/payment", async (c)
+paths:
+  - src/payments/**
+  - src/routes/webhooks.ts
+summary:
+  - text: The webhook trusts a body only after the signature check.
+    evidence:
+      - path: src/payments/provider.ts
+        contains: timingSafeEqual(
+  - text: The payments table holds one row for each provider event.
+    evidence:
+      - path: src/payments/confirm.ts
+        contains: "onConflictDoNothing({ target: payments.eventId })"
+flows: []
+cautions:
+  - text: Verify the raw body, because parsing it first changes the bytes the signature covers.
+    evidence:
+      - path: src/routes/webhooks.ts
+        contains: await c.req.text()
+children: []
+relations:
+  - to: orders
+    kind: calls
+    note: A paid event hands the order to fulfilment.
+    evidence:
+      - path: src/routes/webhooks.ts
+        contains: await fulfilOrder(result.orderId)
+terms: []
+qa: []

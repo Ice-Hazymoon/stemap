@@ -1,0 +1,139 @@
+id: payment-confirmation
+title: Confirm a payment
+actor: Payment provider
+goal: Turn a signed payment event into one paid order, even when the event arrives twice.
+after:
+  - checkout
+steps:
+  - id: receive
+    title: Receive the event
+    lane: external
+    module: payments
+    kind: start
+    text: The provider posts a signed event to POST /webhooks/payment.
+    evidence:
+      - path: src/routes/webhooks.ts
+        contains: .post("/payment", async (c)
+    writes: []
+    next:
+      - to: verify
+        failure: false
+  - id: verify
+    title: Is the signature right?
+    lane: api
+    module: payments
+    kind: decision
+    text: The route compares the HMAC of the raw body with the `x-signature` header.
+    evidence:
+      - path: src/routes/webhooks.ts
+        contains: c.req.header("x-signature")
+      - path: src/payments/provider.ts
+        contains: createHmac("sha256", SECRET)
+    writes: []
+    next:
+      - to: record
+        when: The signature matches
+        failure: false
+      - to: reject
+        when: The signature does not match
+        failure: true
+  - id: reject
+    title: Refuse the event
+    lane: api
+    module: payments
+    kind: failure
+    text: The route answers 401 with `bad_signature` and changes nothing.
+    evidence:
+      - path: src/routes/webhooks.ts
+        contains: '"bad_signature"'
+    writes: []
+    next: []
+  - id: record
+    title: Have we seen this event?
+    lane: service
+    module: payments
+    kind: decision
+    text: The event id is the primary key, so a repeated event writes no row.
+    evidence:
+      - path: src/payments/confirm.ts
+        contains: "onConflictDoNothing({ target: payments.eventId })"
+    writes:
+      - target: payments
+        change: New row for the event
+    next:
+      - to: amount
+        when: This event is new
+        failure: false
+      - to: repeat
+        when: The event came before
+        failure: false
+  - id: repeat
+    title: Ignore the repeat
+    lane: api
+    module: payments
+    kind: end
+    text: The route answers 200 so the provider stops sending the event.
+    evidence:
+      - path: src/routes/webhooks.ts
+        contains: result.status === "duplicate"
+    writes: []
+    next: []
+  - id: amount
+    title: Does the amount match?
+    lane: service
+    module: payments
+    kind: decision
+    text: The service compares the amount in the event with the order total.
+    evidence:
+      - path: src/payments/confirm.ts
+        contains: order?.totalCents !== event.amount
+    writes: []
+    next:
+      - to: fulfil
+        when: The amounts match
+        failure: false
+      - to: hold
+        when: The amounts differ
+        failure: true
+  - id: hold
+    title: Hold for review
+    lane: service
+    module: orders
+    kind: failure
+    text: The order moves to `review` and waits for a person.
+    evidence:
+      - path: src/orders/orders.ts
+        contains: 'status: "review"'
+      - path: src/routes/webhooks.ts
+        contains: await holdForReview(result.orderId)
+    writes:
+      - target: orders
+        change: Status becomes review
+    next: []
+  - id: fulfil
+    title: Fulfil the order
+    lane: service
+    module: orders
+    kind: subflow
+    subflow: order-fulfilment
+    text: The route hands the paid order to fulfilment.
+    evidence:
+      - path: src/routes/webhooks.ts
+        contains: await fulfilOrder(result.orderId)
+    writes: []
+    next:
+      - to: acknowledge
+        failure: false
+  - id: acknowledge
+    title: Acknowledge the event
+    lane: api
+    module: payments
+    kind: end
+    text: The route answers 200 after the order is fulfilled.
+    evidence:
+      - path: src/routes/webhooks.ts
+        contains: |-
+          return c.json({ ok: true });
+          });
+    writes: []
+    next: []

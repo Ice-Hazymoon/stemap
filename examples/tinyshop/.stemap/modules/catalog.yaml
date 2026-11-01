@@ -1,0 +1,20 @@
+id: catalog
+title: Catalog
+oneLine:
+  text: Products and their stock.
+  evidence:
+    - path: src/catalog/stock.ts
+      contains: export async function reserveStock
+paths:
+  - src/catalog/**
+summary:
+  - text: Stock goes down in one guarded update, so two buyers cannot take the last item.
+    evidence:
+      - path: src/catalog/stock.ts
+        contains: gte(products.stock, line.quantity)
+flows: []
+cautions: []
+children: []
+relations: []
+terms: []
+qa: []

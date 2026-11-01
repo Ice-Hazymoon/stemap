@@ -1,0 +1,21 @@
+title: tinyshop
+summary:
+  - text: "A small shop: a buyer checks out, a provider confirms the payment, and the shop fulfils the order."
+    evidence:
+      - path: src/app.ts
+        contains: app.route("/checkout", checkout)
+      - path: src/app.ts
+        contains: app.route("/webhooks", webhooks)
+groups:
+  - title: Selling
+    modules:
+      - orders
+      - catalog
+  - title: Money
+    modules:
+      - payments
+  - title: Platform
+    modules:
+      - notifications
+      - database
+preferredTerms: {}

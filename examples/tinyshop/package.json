@@ -1,0 +1,11 @@
+{
+  "name": "tinyshop",
+  "private": true,
+  "description": "A small invented shop, used to show what a stemap map looks like. It is not a real store and does not run.",
+  "dependencies": {
+    "better-sqlite3": "^12.0.0",
+    "bullmq": "^5.0.0",
+    "drizzle-orm": "^0.44.0",
+    "hono": "^4.0.0"
+  }
+}

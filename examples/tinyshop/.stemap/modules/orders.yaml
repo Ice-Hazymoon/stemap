@@ -1,0 +1,56 @@
+id: orders
+title: Orders
+oneLine:
+  text: An order moves from pending to paid, and from paid to refunded.
+  evidence:
+    - path: src/orders/orders.ts
+      contains: 'status: "pending"'
+    - path: src/orders/fulfil.ts
+      contains: 'status: "paid"'
+    - path: src/orders/refund.ts
+      contains: 'status: "refunded" })'
+paths:
+  - src/orders/**
+  - src/routes/checkout.ts
+  - src/routes/orders.ts
+summary:
+  - text: The checkout route creates every order.
+    evidence:
+      - path: src/routes/checkout.ts
+        contains: await createOrder(email, reservation.lines)
+  - text: A payment that does not match its order waits for a person.
+    evidence:
+      - path: src/orders/orders.ts
+        contains: 'status: "review"'
+flows: []
+cautions:
+  - text: Keep the provider call before the stock return in `refundOrder`, or a refused refund gives away stock.
+    evidence:
+      - path: src/orders/refund.ts
+        contains: await refundPayment(payment!.providerRef, order.totalCents)
+      - path: src/orders/refund.ts
+        contains: await releaseStock(
+children: []
+relations:
+  - to: payments
+    kind: calls
+    note: Checkout and refunds both go through the provider client.
+    evidence:
+      - path: src/routes/checkout.ts
+        contains: await startPayment(order)
+  - to: catalog
+    kind: calls
+    note: An order takes stock before the row exists.
+    evidence:
+      - path: src/routes/checkout.ts
+        contains: await reserveStock(lines)
+terms: []
+qa:
+  - question: When does a pending order stop being pending?
+    answer:
+      - text: A signed payment event moves it to paid, and a failed session moves it to cancelled.
+        evidence:
+          - path: src/orders/fulfil.ts
+            contains: 'status: "paid"'
+          - path: src/orders/orders.ts
+            contains: 'status: "cancelled"'

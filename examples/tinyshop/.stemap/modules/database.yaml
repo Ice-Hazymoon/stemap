@@ -1,0 +1,19 @@
+id: database
+title: Database
+oneLine:
+  text: The tables and the one database client.
+  evidence:
+    - path: src/db/schema.ts
+      contains: sqliteTable("orders"
+    - path: src/db/client.ts
+      contains: export const db
+paths:
+  - src/db/**
+  - src/app.ts
+summary: []
+flows: []
+cautions: []
+children: []
+relations: []
+terms: []
+qa: []

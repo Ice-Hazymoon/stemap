@@ -1,0 +1,104 @@
+id: order-fulfilment
+title: Fulfil an order
+actor: Shop
+goal: Mark the order paid, open a shipment and send the buyer a receipt.
+after:
+  - payment-confirmation
+steps:
+  - id: mark-paid
+    title: Mark the order paid
+    lane: service
+    module: orders
+    kind: start
+    text: The service sets the order status to `paid`.
+    evidence:
+      - path: src/orders/fulfil.ts
+        contains: 'status: "paid"'
+    writes:
+      - target: orders
+        change: Status becomes paid
+    next:
+      - to: open-shipment
+        failure: false
+  - id: open-shipment
+    title: Open a shipment
+    lane: service
+    module: orders
+    kind: action
+    text: The service writes a shipment that waits for the warehouse.
+    evidence:
+      - path: src/orders/fulfil.ts
+        contains: 'status: "waiting"'
+    writes:
+      - target: shipments
+        change: New row, status waiting
+    next:
+      - to: queue-receipt
+        failure: false
+  - id: queue-receipt
+    title: Queue the receipt
+    lane: queue
+    module: notifications
+    kind: action
+    text: The service queues a receipt job with five attempts.
+    evidence:
+      - path: src/notify/receipts.ts
+        contains: "{ attempts: 5, backoff"
+    writes: []
+    next:
+      - to: send-receipt
+        failure: false
+  - id: send-receipt
+    title: Send the receipt
+    lane: external
+    module: notifications
+    kind: action
+    text: The worker asks the mail provider to send the receipt.
+    evidence:
+      - path: src/notify/receipts.ts
+        contains: '"https://mail.example.com/send"'
+    writes: []
+    next:
+      - to: mail-ok
+        failure: false
+  - id: mail-ok
+    title: Did the mail go out?
+    lane: queue
+    module: notifications
+    kind: decision
+    text: The worker throws when the mail provider refuses.
+    evidence:
+      - path: src/notify/receipts.ts
+        contains: if (!res.ok) throw new Error
+    writes: []
+    next:
+      - to: done
+        when: The provider accepted
+        failure: false
+      - to: retry
+        when: The provider refused
+        failure: true
+  - id: retry
+    title: Try again later
+    lane: queue
+    module: notifications
+    kind: action
+    text: The queue tries again with exponential backoff from one minute.
+    evidence:
+      - path: src/notify/receipts.ts
+        contains: 'backoff: { type: "exponential", delay: 60_000 }'
+    writes: []
+    next:
+      - to: send-receipt
+        failure: true
+  - id: done
+    title: Receipt sent
+    lane: external
+    module: notifications
+    kind: end
+    text: The job finishes and the buyer has the receipt.
+    evidence:
+      - path: src/notify/receipts.ts
+        contains: await sendReceipt(job.data.orderId)
+    writes: []
+    next: []
