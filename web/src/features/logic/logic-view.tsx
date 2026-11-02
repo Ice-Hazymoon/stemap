@@ -1,17 +1,37 @@
-import { useEffect, useMemo, useState, type ReactNode } from "react";
+import { Fragment, useEffect, useMemo, useState, type ReactNode } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { ArrowRight, ChevronRight, CornerDownLeft, OctagonAlert, Repeat, ShieldAlert, type LucideIcon } from "lucide-react";
+import { ChevronRight } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { Skeleton } from "@/components/ui/skeleton";
-import { TestMark } from "@/features/journey/step-card";
 import { logicQuery, type Cond, type LogicNode } from "@/lib/api";
 import { useLang } from "@/lib/lang";
 import type { SourceRef } from "@/lib/nav";
 import { cn } from "@/lib/utils";
 
-/** Long identifiers break after a dot, never at a random letter. */
-const Soft = ({ text }: { text: string }) => <>{text.split(/(?<=[.(,])/).map((part, i) => <span key={i}>{i > 0 && <wbr />}{part}</span>)}</>;
+/** Cuts code wherever `starts` says a new piece begins, but never inside a bracket. */
+function outside(code: string, starts: (i: number) => boolean) {
+  const out: string[] = [];
+  let depth = 0, from = 0;
+  for (let i = 0; i < code.length; i++) {
+    if ("([{".includes(code[i]!)) depth++;
+    else if (")]}".includes(code[i]!)) depth = Math.max(depth - 1, 0);
+    else if (!depth && i > from && starts(i)) { out.push(code.slice(from, i)); from = i; }
+  }
+  return [...out, code.slice(from)];
+}
+
+const Whole = ({ children }: { children: ReactNode }) => <span className="inline-block max-w-full [overflow-wrap:anywhere]">{children}</span>;
+
+/**
+ * Wraps the way a person would: between words first, then before a chain dot, and inside a bracket only as a last resort.
+ * Each level stays whole while it fits, which is what ranks the three: `.where(eq(a, b))` moves down as one piece.
+ */
+const Soft = ({ text }: { text: string }) => <>{outside(text, (i) => text[i - 1] === " ").map((word, i) => {
+  const code = word.trimEnd();
+  const chain = outside(code, (k) => code[k] === "." && /[\w)\]]/.test(code[k - 1]!) && /[A-Za-z_$#]/.test(code[k + 1] ?? ""));
+  return <Fragment key={i}><Whole>{chain.map((p, k) => <Whole key={k}>{p.split(/(?<=[(,.])/).map((part, n) => <Fragment key={n}>{n > 0 && <wbr />}{part}</Fragment>)}</Whole>)}</Whole>{word !== code && " "}</Fragment>;
+})}</>;
 
 /** Lines inside a node, so a branch that holds a cited line opens by itself. */
 function lines(n: LogicNode): number[] {
@@ -26,29 +46,33 @@ function lines(n: LogicNode): number[] {
 }
 
 interface Ctx { hits: Set<number>; open: (line: number) => void }
-const Line = ({ n }: { n: number }) => <span className="ml-auto shrink-0 pl-2 font-mono text-caption leading-5 text-muted-foreground opacity-0 transition-opacity group-hover/line:opacity-100">{n}</span>;
-const hitCode = "bg-hit shadow-[inset_2px_0_0_var(--foreground)]";
-
-const OP_STYLE = {
-  and: { label: ["同时满足", "All of"], tag: "text-muted-foreground", rail: "border-border" },
-  or: { label: ["满足任一", "Any of"], tag: "text-muted-foreground", rail: "border-border" },
-} as const;
+/**
+ * Verb, then code. The code starts on one edge, so the verbs read as an outline of the function.
+ * Top-aligned on one line height: a baseline would drop the verb to the last line of wrapped code.
+ */
+const row = "grid grid-cols-[4rem_minmax(0,1fr)] items-start gap-x-2";
+/** The rail is the same rail as the fork above it: a test. The fill says this step cites these lines. Each appears once, on the outermost box. */
+const box = (hit: boolean, test: boolean, depth: number) => cn("rounded-r-[4px] border-l-2 py-0.5 pr-1.5", depth > 0 ? "pl-2" : "pl-3.5", test ? "border-test" : "border-transparent", hit && "bg-hit");
+const codeLink = "-mx-1 min-w-0 justify-self-start rounded-sm px-1 text-left font-mono text-caption leading-5 text-balance hover:bg-accent";
+const Verb = ({ tone = "quiet", children }: { tone?: "quiet" | "plain" | "test" | "fail"; children: string }) => (
+  <span className={cn("text-caption leading-5", { quiet: "text-muted-foreground", plain: "font-medium", test: "font-medium text-test", fail: "font-medium text-destructive" }[tone])}>{children}</span>
+);
+const Code = ({ muted, children }: { muted?: boolean; children: string }) => <code className={cn("min-w-0 font-mono text-caption leading-5 text-balance", muted && "text-muted-foreground")}><Soft text={children} /></code>;
 
 function CondView({ c, ctx }: { c: Cond; ctx: Ctx }) {
   const { t } = useLang();
   if (c.op === "leaf") {
     return (
-      <button title={t(`第 ${c.line} 行`, `Line ${c.line}`)} onClick={() => ctx.open(c.line)} className={cn("block max-w-full min-w-0 rounded-sm px-1 text-left font-mono text-caption leading-[19px] hover:bg-accent", ctx.hits.has(c.line) && hitCode)}>
+      <button title={t(`第 ${c.line} 行`, `Line ${c.line}`)} onClick={() => ctx.open(c.line)} className={codeLink}>
         <Soft text={c.text} />
       </button>
     );
   }
-  const style = c.op === "not" ? null : OP_STYLE[c.op];
   const items = c.op === "not" ? [c.item] : c.items;
   return (
-    <div className="flex min-w-0 flex-1 gap-1.5">
-      <span className={cn("self-start rounded-[3px] px-1 text-caption leading-4 font-medium", style?.tag ?? "text-muted-foreground")}>{style ? t(style.label[0], style.label[1]) : t("非", "Not")}</span>
-      <div className={cn("grid min-w-0 flex-1 gap-px border-l-[1.5px] pl-1.5", style?.rail ?? "border-destructive/40")}>{items.map((x, i) => <CondView key={i} c={x} ctx={ctx} />)}</div>
+    <div className="grid min-w-0 gap-0.5">
+      <span className="text-caption leading-5 text-muted-foreground">{c.op === "not" ? t("非", "Not") : c.op === "and" ? t("同时满足", "All of") : t("满足任一", "Any of")}</span>
+      <div className="grid min-w-0 gap-px border-l-[1.5px] border-border pl-2">{items.map((x, i) => <CondView key={i} c={x} ctx={ctx} />)}</div>
     </div>
   );
 }
@@ -63,7 +87,7 @@ function Branch({ label, kind, body, ctx, depth }: { label: string; kind: keyof 
   useEffect(() => { if (has) setOpen(true); }, [has]);
   const count = lines({ t: "scope", text: "", body, line: 0 }).length - 1;
   return (
-    <Collapsible open={open} onOpenChange={setOpen} className={cn("ml-2.5 min-w-0 border-l-[1.5px] pl-2.5", RAIL[kind])}>
+    <Collapsible open={open} onOpenChange={setOpen} className={cn("ml-3 min-w-0 border-l-[1.5px] pl-2", RAIL[kind])}>
       <CollapsibleTrigger className="group/branch flex min-h-[21px] w-full items-center gap-0.5 text-left text-caption font-medium hover:text-foreground">
         <ChevronRight size={12} className="shrink-0 text-muted-foreground transition-transform duration-150 group-data-[state=open]/branch:rotate-90" aria-hidden />
         <span className={cn(kind === "no" && "text-muted-foreground", kind === "error" && "text-destructive", kind === "case" && "font-mono text-caption font-normal break-words")}>{label}</span>
@@ -73,13 +97,6 @@ function Branch({ label, kind, body, ctx, depth }: { label: string; kind: keyof 
     </Collapsible>
   );
 }
-
-const block = "rounded-[4px] py-1 pr-1.5 pl-1.5";
-const testRow = cn("group/line flex items-start gap-1.5 bg-test-soft", block);
-const loopRow = cn("group/line flex items-start gap-1.5 bg-muted", block);
-/** A construct always opens with its mark and word, so an `if` and a `switch` are told apart without reading the code. */
-const Kw = ({ mark, test, children }: { mark: ReactNode; test?: boolean; children: string }) => <span className={cn("flex h-[19px] shrink-0 items-center gap-1 text-caption font-medium", test && "text-test")}>{mark}{children}</span>;
-const Glyph = ({ icon: Icon }: { icon: LucideIcon }) => <Icon size={13} strokeWidth={1.75} aria-hidden />;
 
 /** `return throwApiError(...)` is a throw in all but name, and a reader looks for failures by what they do. */
 const fails = (n: Extract<LogicNode, { t: "return" | "throw" | "call" }>) => n.t === "throw" || (n.t === "return" && /^(throw\w*|createError)\b/.test(n.text ?? ""));
@@ -91,18 +108,15 @@ const guardOf = (n: LogicNode) => {
   return only.t === "return" || only.t === "throw" ? only : null;
 };
 
-function End({ n, ctx }: { n: Extract<LogicNode, { t: "return" | "throw" | "call" }>; ctx: Ctx }) {
+/** With `box` the row stands alone; without it, it sits inside a guard that already drew the rail and the fill. */
+function End({ n, ctx, box: own }: { n: Extract<LogicNode, { t: "return" | "throw" | "call" }>; ctx: Ctx; box?: string }) {
   const failed = fails(n);
-  const Icon = failed ? OctagonAlert : n.t === "return" ? CornerDownLeft : ArrowRight;
   const { t } = useLang();
   const tag = failed ? t("抛错", "Throw") : n.t === "return" ? (n.text ? t("返回", "Return") : t("到此结束", "Stop here")) : t("调用", "Call");
-  const tone = failed ? "text-destructive" : n.t === "return" ? "text-foreground" : "text-muted-foreground";
   return (
-    <button onClick={() => ctx.open(n.line)} className={cn("group/line flex w-full items-baseline gap-1.5 rounded-sm px-1 py-px text-left hover:bg-accent", ctx.hits.has(n.line) && hitCode)}>
-      <Icon size={12} aria-hidden className={cn("shrink-0 translate-y-0.5", tone)} />
-      <span className={cn("shrink-0 text-caption font-medium", tone)}>{tag}</span>
-      {n.text && <code className="min-w-0 font-mono text-caption break-words text-muted-foreground"><Soft text={n.text} /></code>}
-      <Line n={n.line} />
+    <button title={t(`第 ${n.line} 行`, `Line ${n.line}`)} onClick={() => ctx.open(n.line)} className={cn(row, "text-left hover:bg-accent", own ? `w-full ${own}` : "-mx-1 rounded-sm px-1")}>
+      <Verb tone={failed ? "fail" : "quiet"}>{tag}</Verb>
+      {n.text && <Code muted>{n.text}</Code>}
     </button>
   );
 }
@@ -111,15 +125,15 @@ function Nodes({ list, ctx, depth }: { list: LogicNode[]; ctx: Ctx; depth: numbe
   const { t } = useLang();
   if (!list.length) return <p className="py-0.5 text-caption text-muted-foreground">{t("继续执行下一行", "Goes on to the next line")}</p>;
   return (
-    <ol className="grid min-w-0 gap-1">
+    <ol className="grid min-w-0 gap-1.5">
       {list.map((n, i) => {
         const hit = ctx.hits.has(n.line);
-        if (n.t === "return" || n.t === "throw" || n.t === "call") return <li key={i}><End n={n} ctx={ctx} /></li>;
+        if (n.t === "return" || n.t === "throw" || n.t === "call") return <li key={i}><End n={n} ctx={ctx} box={box(hit, false, depth)} /></li>;
         const guard = guardOf(n);
         if (n.t === "if" && guard) {
           return (
-            <li key={i} className={cn("grid min-w-0 gap-px bg-test-soft", block, hit && hitCode)}>
-              <div className="group/line flex items-start gap-1.5"><Kw test mark={<Glyph icon={ShieldAlert} />}>{t("拦下，如果", "Stops if")}</Kw><CondView c={n.cond} ctx={ctx} /><Line n={n.line} /></div>
+            <li key={i} className={cn("grid min-w-0 gap-px", box(lines(n).some((l) => ctx.hits.has(l)), true, depth))}>
+              <div className={row}><Verb tone="test">{t("拦下，如果", "Stops if")}</Verb><CondView c={n.cond} ctx={ctx} /></div>
               <End n={guard} ctx={ctx} />
             </li>
           );
@@ -127,7 +141,7 @@ function Nodes({ list, ctx, depth }: { list: LogicNode[]; ctx: Ctx; depth: numbe
         if (n.t === "if") {
           return (
             <li key={i} className="grid min-w-0 gap-0.5">
-              <div className={cn(testRow, hit && hitCode)}><Kw test mark={<TestMark size={13} />}>{t("如果", "If")}</Kw><CondView c={n.cond} ctx={ctx} /><Line n={n.line} /></div>
+              <div className={cn(row, box(hit, true, depth))}><Verb tone="test">{t("如果", "If")}</Verb><CondView c={n.cond} ctx={ctx} /></div>
               <Branch label={t("成立", "Then")} kind="yes" body={n.then} ctx={ctx} depth={depth} />
               {n.else.length > 0 && <Branch label={t("否则", "Else")} kind="no" body={n.else} ctx={ctx} depth={depth} />}
             </li>
@@ -136,7 +150,7 @@ function Nodes({ list, ctx, depth }: { list: LogicNode[]; ctx: Ctx; depth: numbe
         if (n.t === "switch") {
           return (
             <li key={i} className="grid min-w-0 gap-0.5">
-              <div className={testRow}><Kw test mark={<TestMark size={13} />}>{t("分支", "Switch")}</Kw><button className="min-w-0 px-1 text-left font-mono text-caption leading-[19px]" onClick={() => ctx.open(n.line)}><Soft text={n.text} /></button><Line n={n.line} /></div>
+              <div className={cn(row, box(hit, true, depth))}><Verb tone="test">{t("分支", "Switch")}</Verb><button title={t(`第 ${n.line} 行`, `Line ${n.line}`)} className={codeLink} onClick={() => ctx.open(n.line)}><Soft text={n.text} /></button></div>
               {n.cases.map((c, k) => <Branch key={k} label={c.label === "default" ? t("其他", "Otherwise") : c.label} kind="case" body={c.body} ctx={ctx} depth={depth} />)}
             </li>
           );
@@ -152,7 +166,7 @@ function Nodes({ list, ctx, depth }: { list: LogicNode[]; ctx: Ctx; depth: numbe
         if (n.t === "loop") {
           return (
             <li key={i} className="grid min-w-0 gap-0.5">
-              <div className={loopRow}><Kw mark={<Glyph icon={Repeat} />}>{t("遍历", "For each")}</Kw><button className="min-w-0 px-1 text-left font-mono text-caption leading-[19px]" onClick={() => ctx.open(n.line)}><Soft text={n.text} /></button><Line n={n.line} /></div>
+              <div className={cn(row, box(hit, false, depth))}><Verb tone="plain">{t("遍历", "For each")}</Verb><button title={t(`第 ${n.line} 行`, `Line ${n.line}`)} className={codeLink} onClick={() => ctx.open(n.line)}><Soft text={n.text} /></button></div>
               <Branch label={t("每一项", "Each item")} kind="no" body={n.body} ctx={ctx} depth={depth} />
             </li>
           );
@@ -187,10 +201,10 @@ export function StepLogic({ fns, open, onToggle, cited, onOpen }: { fns: { id: s
   if (!fn) return null;
   return (
     <Collapsible open={open} onOpenChange={onToggle}>
-      <CollapsibleTrigger className="group/logic mb-2 flex w-full items-center gap-1 text-left">
-        <ChevronRight size={13} className="text-muted-foreground transition-transform duration-150 group-data-[state=open]/logic:rotate-90" aria-hidden />
-        <h3 className="text-ui font-semibold">{t("判断逻辑", "Decision logic")}</h3>
-        <span className="ml-auto text-caption text-muted-foreground">{t("来自代码", "from the code")}</span>
+      <CollapsibleTrigger className="group/logic mb-2 flex w-full items-center gap-1.5 text-left">
+        <ChevronRight size={14} className="shrink-0 text-muted-foreground transition-transform duration-150 group-data-[state=open]/logic:rotate-90" aria-hidden />
+        <h3 className="shrink-0 text-ui font-semibold">{t("判断逻辑", "Decision logic")}</h3>
+        {fns.length === 1 ? <code className="ml-auto min-w-0 truncate pl-3 font-mono text-caption text-muted-foreground">{fn.label}</code> : <span className="ml-auto pl-3 text-caption text-muted-foreground">{t("来自代码", "from the code")}</span>}
       </CollapsibleTrigger>
       <CollapsibleContent>
         {fns.length > 1 && (

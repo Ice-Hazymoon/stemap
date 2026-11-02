@@ -84,8 +84,11 @@ export function logicReader(root: string, file: string): (start: number, end: nu
     return { op: "leaf", text: text(n, 90), line };
   };
 
-  const exitText = (arg: AnyNode | null | undefined) => {
-    if (!arg) return "";
+  /** `as const` says nothing about what the code does, and it costs a return value its one line. */
+  const bare = (n: AnyNode): AnyNode => (n.type === "TSAsExpression" || n.type === "TSSatisfiesExpression" ? bare(n.expression) : n);
+  const exitText = (found: AnyNode | null | undefined) => {
+    if (!found) return "";
+    const arg = bare(found);
     if (arg.type === "CallExpression" && arg.callee?.name === "createError") {
       const props = arg.arguments[0]?.properties ?? [];
       const get = (k: string) => props.find((p: AnyNode) => p.key?.name === k)?.value;
@@ -111,7 +114,7 @@ export function logicReader(root: string, file: string): (start: number, end: nu
     let c: AnyNode | null = n;
     const unwrap = (x: AnyNode): AnyNode => (x.type === "AwaitExpression" ? unwrap(x.argument) : x);
     c = unwrap(n);
-    return c.type === "CallExpression" ? text(c.callee, 60) : null;
+    return c.type === "CallExpression" ? text(c.callee, 90) : null;
   };
 
   const seq = (list: AnyNode[], depth: number): LogicNode[] => {

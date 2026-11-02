@@ -20,5 +20,7 @@ First release.
 - The Flows tab lists every flow with subflows nested under the flow that enters them, instead of opening the first one.
 - Upgrading stemap recompiles the page, and a browser can no longer keep running an old copy of it.
 - `bun run demo` opens the map of an invented shop, with a claim that the code has outgrown.
+- The decision logic in a step reads as two columns, verbs and code, with one highlight for the lines the step cites. Code wraps at words and chain dots, and `as const` is gone from return values.
+- A step that is a whole flow can be expanded in place to show its steps, or opened on its own page from a button on its node.
 - `stemap --help` groups commands by what you are doing, and a mistyped command stops with a suggestion instead of compiling.
 - `stemap fill` shows a live panel on a terminal, and `stemap status` groups claims by file. `stemap status --all` lists every claim.

@@ -1,16 +1,18 @@
 import { memo } from "react";
 import { Handle, Position, type Node, type NodeProps } from "@xyflow/react";
-import { ArrowUpRight, Split } from "lucide-react";
+import { ArrowUpRight, ChevronRight, Split } from "lucide-react";
 import type { ViewStep } from "@/lib/api";
 import { DriftDot, type DriftState } from "@/lib/drift";
 import { cn } from "@/lib/utils";
-import { diamondPath } from "./layout";
+import { diamondPath, SUB_W } from "./layout";
 
 export interface CardData extends Record<string, unknown> {
   box: { w: number; h: number }; step: ViewStep; title: string; active: boolean; passed: boolean; preview: boolean; place: string;
-  chips: { table: string; hue: number }[]; more: number; hiddenBranches: number; stub?: number; foldNote: string; drift?: DriftState; subSteps: number; stepsWord: string; testWord: string; waysWord: string; writesTraced: boolean;
+  chips: { table: string; hue: number }[]; more: number; hiddenBranches: number; stub?: number; foldNote: string; drift?: DriftState; subSteps: number; open: boolean; canOpen: boolean; foldWord: string; openWord: string; stepsWord: string; testWord: string; waysWord: string; writesTraced: boolean;
   onTrace: (table: string | null) => void;
   onPin: (table: string) => void;
+  onEnter: (sub: string, from: string) => void;
+  onToggle: (key: string) => void;
 }
 export type Card = Node<CardData, "card">;
 
@@ -46,13 +48,32 @@ function Shape({ data }: { data: CardData }) {
     </div>
   );
   if (step.kind === "subflow") return (
-    <div {...common} className="flow-node flex h-full items-center gap-2 pr-2 pl-5">
-      <span className="flex min-w-0 flex-1 flex-col">
-        <span className="truncate text-ui font-medium">{title}</span>
-        <span className="font-mono text-caption leading-4 tabular-nums opacity-65">{subSteps} {data.stepsWord}</span>
-      </span>
-      <span className="grid size-8 shrink-0 place-items-center"><ArrowUpRight size={15} strokeWidth={2} /></span>
-    </div>
+    <>
+      {/*
+        * Opened, the block stays the same pill in the same place, centred where its wire lands, and a room opens behind it.
+        * A wide flow would push a corner header off the screen, and selection stays on the pill: a filled room would swallow what it holds.
+        */}
+      {data.open && <div aria-hidden className="flow-room absolute inset-0" />}
+      <div {...common} style={data.open ? { width: SUB_W, height: 52 } : undefined} className={cn("flow-node relative mx-auto flex items-center gap-1 pr-2", !data.open && "h-full", data.canOpen ? "pl-2" : "pl-5")}>
+        {data.canOpen && (
+          <button aria-label={`${data.foldWord}: ${title}`} aria-expanded={data.open} title={data.foldWord} onClick={(e) => { e.stopPropagation(); data.onToggle(step.id); }}
+            className="nodrag nopan relative grid size-7 shrink-0 place-items-center rounded-full transition-colors duration-150 ease-out before:absolute before:-inset-1.5 hover:bg-[color-mix(in_oklch,currentColor_12%,transparent)]">
+            <ChevronRight size={15} strokeWidth={2} aria-hidden className={cn("transition-transform duration-150 ease-out", data.open && "rotate-90")} />
+          </button>
+        )}
+        <span className="flex min-w-0 flex-1 flex-col pl-0.5">
+          <span className="truncate text-ui font-medium">{title}</span>
+          <span className="font-mono text-caption leading-4 tabular-nums opacity-65">{subSteps} {data.stepsWord}</span>
+        </span>
+        {/* The block selects like every other step, so going inside gets its own control. Tinted from currentColor, it holds on the filled active node too. */}
+        {step.subflow && subSteps > 0 && (
+          <button aria-label={`${data.openWord}: ${title}`} title={data.openWord} onClick={(e) => { e.stopPropagation(); data.onEnter(step.subflow!, step.id); }}
+            className="nodrag nopan group/open relative grid size-8 shrink-0 place-items-center rounded-full bg-[color-mix(in_oklch,currentColor_10%,transparent)] transition-[background-color,scale] duration-150 ease-out before:absolute before:-inset-1 hover:bg-[color-mix(in_oklch,currentColor_20%,transparent)] active:scale-[0.96]">
+            <ArrowUpRight size={15} strokeWidth={2} aria-hidden className="transition-transform duration-150 ease-out group-hover/open:translate-x-px group-hover/open:-translate-y-px" />
+          </button>
+        )}
+      </div>
+    </>
   );
   const test = step.kind === "decision", ways = step.next.length + data.hiddenBranches;
   return (
@@ -69,7 +90,7 @@ function Shape({ data }: { data: CardData }) {
 
 export const StepCard = memo(function StepCard({ data }: NodeProps<Card>) {
   return (
-    <div className="relative h-full" title={data.title}>
+    <div className="relative h-full" title={data.open ? undefined : data.title}>
       <Handle id="in" type="target" position={Position.Top} style={hidden} isConnectable={false} />
       <Handle id="out" type="source" position={Position.Bottom} style={hidden} isConnectable={false} />
       <Shape data={data} />

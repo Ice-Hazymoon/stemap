@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { useQuery } from "@tanstack/react-query";
+import { keepPreviousData, useQuery } from "@tanstack/react-query";
 import { BaseEdge, EdgeLabelRenderer, MarkerType, Panel, ReactFlow, useReactFlow, useStore, type Edge, type EdgeProps, type Node, type NodeProps } from "@xyflow/react";
 import { LocateFixed, Maximize, Minus, Plus } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -8,7 +8,7 @@ import type { DriftItem } from "@/lib/drift";
 import { useLang } from "@/lib/lang";
 import { cn } from "@/lib/utils";
 import { keepMeasured } from "@/lib/flow";
-import { fitChips, layoutFlow, stepTables, tableHues, traceWires, wirePath, type Placed, type Point, type WhenBox } from "./layout";
+import { fitChips, layoutFlow, stepTables, tableHues, traceWires, wirePath, type Inlined, type Placed, type Point, type WhenBox } from "./layout";
 import { StepCard, type Card } from "./step-card";
 
 interface FlowData extends Record<string, unknown> { points?: Point[]; when?: WhenBox; trace: string | null; failure: boolean; back: boolean; on: boolean; unconfirmed: boolean; onPick: (id: string) => void }
@@ -88,8 +88,9 @@ export function ZoomControls({ onLocate }: { onLocate?: () => void }) {
   );
 }
 
-export function Diagram({ journey, full, active, trail, atlas, preview, drift, trace, pinned, onTrace, onPin, onPick }: {
-  journey: ViewJourney; full: ViewJourney; active: string; trail: string[]; atlas: Atlas; preview: string | null; drift: Map<string, DriftItem>; trace: string | null; pinned: string | null; onTrace: (table: string | null) => void; onPin: (table: string) => void; onPick: (id: string) => void;
+export function Diagram({ journey, full, inlined, active, trail, atlas, preview, drift, trace, pinned, onTrace, onPin, onPick, onEnter, onToggle }: {
+  /** `inlined` says which subflows are open here; `journey` and `full` carry its flat steps, with and without folded failures. */
+  journey: ViewJourney; full: ViewJourney; inlined: Inlined; active: string; trail: string[]; atlas: Atlas; preview: string | null; drift: Map<string, DriftItem>; trace: string | null; pinned: string | null; onTrace: (table: string | null) => void; onPin: (table: string) => void; onPick: (id: string) => void; onEnter: (sub: string, from: string) => void; onToggle: (key: string) => void;
 }) {
   const flow = useReactFlow();
   // Bumped by the locate button: the camera effect already knows where the active step is.
@@ -97,9 +98,11 @@ export function Diagram({ journey, full, active, trail, atlas, preview, drift, t
   const { lang, t } = useLang();
   const title = useMemo(() => (s: ViewStep) => t(s.titleZh, s.title), [t]);
   const { data: placed } = useQuery({
-    queryKey: ["flow-layout", journey.id, journey.steps.length, lang],
-    queryFn: () => layoutFlow(journey, title, (n) => (lang === "zh" ? n.whenZh ?? n.when : n.when), (s) => hiddenOut(full, journey, s.id)),
+    queryKey: ["flow-layout", journey.id, journey.steps.length, [...new Set(inlined.within.values())].join(), lang],
+    queryFn: () => layoutFlow(journey, title, (n) => (lang === "zh" ? n.whenZh ?? n.when : n.when), (s) => hiddenOut(full, journey, s.id), inlined.within),
     staleTime: Infinity,
+    // The last layout stays up while the next one runs, so opening a block never blanks the page.
+    placeholderData: keepPreviousData,
   });
   const hues = useMemo(() => tableHues(full), [full]);
   const traced = useMemo(() => (trace ? traceWires(full, trace) : null), [full, trace]);
@@ -117,33 +120,42 @@ export function Diagram({ journey, full, active, trail, atlas, preview, drift, t
       id: "intro", type: "intro", position: { x: Math.max(0, Math.min(pos.get(journey.steps[0]!.id)?.x ?? 0, width - 460)), y: 0 }, draggable: false, selectable: false, zIndex: 1,
       style: { width: 460 }, data: { title: t(journey.titleZh, journey.title), goal: t(journey.goalZh, journey.goal) },
     };
+    const groups = new Set(inlined.within.values());
     const cards: Card[] = journey.steps.flatMap((s) => {
       const p = pos.get(s.id);
       if (!p) return [];
       const tables = stepTables(s).sort((a, b) => (hues.get(a) ?? 9) - (hues.get(b) ?? 9));
       const { shown, more } = fitChips(tables);
       const hiddenBranches = hiddenOut(full, journey, s.id);
+      const open = groups.has(s.id);
+      const sub = atlas.journeys.find((x) => x.id === s.subflow);
       return [{
-        id: s.id, type: "card" as const, position: { x: p.x, y: p.y }, draggable: false, zIndex: 3, style: { width: p.width, height: p.height },
+        // A box sits under what it holds, and a box inside a box above the one around it.
+        id: s.id, type: "card" as const, position: { x: p.x, y: p.y }, draggable: false, zIndex: open ? 2 + s.id.split("/").length : 10, style: { width: p.width, height: p.height },
         data: {
           box: { w: p.width, h: p.height }, step: s, title: title(s), active: s.id === active, passed: seen.has(s.id) && s.id !== active, preview: s.id === preview,
           place: s.module === home ? "" : s.module, chips: shown.map((table) => ({ table, hue: hues.get(table) ?? 0 })), more,
           drift: drift.get(s.id)?.state, onTrace, writesTraced: !!trace && stepTables(s).includes(trace),
-          subSteps: atlas.journeys.find((x) => x.id === s.subflow)?.steps.length ?? 0, stepsWord: t("步", "steps"), testWord: t("判断", "Decision"), waysWord: t("路", "ways"),
-          hiddenBranches: hiddenBranches, stub: p.stub, foldNote: t(`${hiddenBranches} 个失败分支已折叠`, `${hiddenBranches} failure branches folded`), onPin,
+          subSteps: sub?.steps.length ?? 0, open, canOpen: !!sub?.steps.length && !inlined.origin.get(s.id)?.path.includes(sub.id), onToggle,
+          foldWord: open ? t("收起", "Collapse") : t("在这里展开", "Expand here"), openWord: t("打开这条流程", "Open this flow"), stepsWord: t("步", "steps"), testWord: t("判断", "Decision"), waysWord: t("路", "ways"),
+          hiddenBranches: hiddenBranches, stub: p.stub, foldNote: t(`${hiddenBranches} 个失败分支已折叠`, `${hiddenBranches} failure branches folded`), onPin, onEnter,
         },
       }];
     });
+    const rawEdge = (from: string, to: string) => {
+      const o = inlined.origin.get(from);
+      return `${o?.journey.id ?? journey.id}/${o?.step.id ?? from}>${to.slice(o?.prefix.length ?? 0)}`;
+    };
     const edges: Edge<FlowData>[] = journey.steps.flatMap((s) => s.next.flatMap((n) => {
       const id = `${s.id}>${n.to}`;
       const points = routes.get(id);
       if (!points) return [];
       const on = (s.id === active && (!preview || n.to === preview)) || (seen.has(s.id) && seen.has(n.to));
-      const data: FlowData = { points, when: labels.get(id), trace: traced?.has(id) ? WIRE[hues.get(trace!) ?? 0]! : null, failure: !!n.failure, back: points[0]![1] > points.at(-1)![1], on, unconfirmed: atlas.support?.edges[`${journey.id}/${id}`] === false, onPick };
-      return [{ id, source: s.id, target: n.to, type: "wire", sourceHandle: "out", targetHandle: "in", zIndex: on ? 5 : 4, markerEnd: { type: MarkerType.ArrowClosed, markerUnits: "userSpaceOnUse", width: 20, height: 20, color: wireColour(data) }, data }];
+      const data: FlowData = { points, when: labels.get(id), trace: traced?.has(id) ? WIRE[hues.get(trace!) ?? 0]! : null, failure: !!n.failure, back: points[0]![1] > points.at(-1)![1], on, unconfirmed: atlas.support?.edges[rawEdge(s.id, n.to)] === false, onPick };
+      return [{ id, source: s.id, target: n.to, type: "wire", sourceHandle: "out", targetHandle: "in", zIndex: on ? 12 : 11, markerEnd: { type: MarkerType.ArrowClosed, markerUnits: "userSpaceOnUse", width: 20, height: 20, color: wireColour(data) }, data }];
     }));
     return { nodes: keepMeasured(flow, [intro, ...cards] as Node[]), edges };
-  }, [placed, journey, full, active, trail, t, title, atlas, preview, drift, hues, trace, traced, onTrace, onPin, onPick, flow]);
+  }, [placed, journey, full, inlined, active, trail, t, title, atlas, preview, drift, hues, trace, traced, onTrace, onPin, onPick, onEnter, onToggle, flow]);
 
   // The flow fits when there is room. Below 80% nodes stop being readable, so the camera follows the active step at reading size.
   const width = useStore((s) => s.width);
@@ -156,7 +168,8 @@ export function Diagram({ journey, full, active, trail, atlas, preview, drift, t
     const span = placed.width * zoom;
     const x = fit >= 0.8 ? Math.max(36, (width - 18 - span) / 2) : Math.max(width - 36 - span, Math.min(36, width / 2 - (p.x + p.width / 2) * zoom));
     // The first step always opens with the flow's title in view, however far a loop pushed it down.
-    const y = active === journey.steps[0]?.id ? 28 : Math.min(28, viewH * 0.36 - (p.y + p.height / 2) * zoom);
+    // An opened box can be taller than the screen: the reader wants its head, not its middle.
+    const y = active === journey.steps[0]?.id ? 28 : Math.min(28, viewH * 0.36 - (p.y + Math.min(p.height, 120) / 2) * zoom);
     void flow.setViewport({ x, y, zoom }, { duration: 280 });
   }, [active, placed, flow, width, viewH, journey, locate]);
 

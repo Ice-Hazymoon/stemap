@@ -4,6 +4,8 @@ import type { Atlas, ViewJourney, ViewStep } from "@/lib/api";
 
 export const CARD_W = 224;
 const CHIP_ROW = 28, ACTION_H = 56, TEST_TAG = 20, SUB_H = 52, END_H = 42;
+export const SUB_W = CARD_W + 24;
+const GROUP_PAD = 20, GROUP_HEAD = SUB_H + 28, GROUP_MIN_W = SUB_W + GROUP_PAD * 2;
 /** The flow's own title and goal sit above the first step and scroll with it. */
 export const INTRO_H = 140;
 const elk = new ELK();
@@ -57,7 +59,7 @@ const pillWidth = (title: string) => {
 function size(s: ViewStep, title: string) {
   if (s.kind === "start") return { width: pillWidth(title) + 18, height: END_H };
   if (s.kind === "end" || s.kind === "failure") return { width: pillWidth(title), height: END_H };
-  if (s.kind === "subflow") return { width: CARD_W, height: SUB_H };
+  if (s.kind === "subflow") return { width: SUB_W, height: SUB_H };
   return { width: CARD_W, height: ACTION_H + (s.kind === "decision" ? TEST_TAG : 0) + (s.writes.length ? CHIP_ROW : 0) };
 }
 
@@ -74,59 +76,105 @@ function whenSize(text: string) {
   return { width: Math.ceil(Math.min(w, inner)) + WHEN_PAD_X, height: Math.min(2, Math.ceil(w / inner)) * WHEN_LINE + WHEN_PAD_Y };
 }
 
-/** Layers give "when", the branch gives "where". Node order follows `next`, so the main path stays leftmost. */
-export async function layoutFlow(j: ViewJourney, title: (s: ViewStep) => string, when: (n: ViewStep["next"][number]) => string | undefined = () => undefined, folded: (s: ViewStep) => number = () => 0) {
-  const input: ElkNode = {
-    id: "root",
-    layoutOptions: {
-      "elk.algorithm": "layered",
-      "elk.direction": "DOWN",
-      // The router only fixes where a wire crosses each layer; `wirePath` draws the curve between those points.
-      "elk.edgeRouting": "POLYLINE",
-      "elk.edgeLabels.placement": "CENTER",
-      "elk.layered.edgeLabels.sideSelection": "ALWAYS_DOWN",
-      "elk.layered.spacing.nodeNodeBetweenLayers": "52",
-      "elk.layered.spacing.edgeNodeBetweenLayers": "24",
-      "elk.layered.spacing.edgeEdgeBetweenLayers": "11",
-      "elk.spacing.nodeNode": "26",
-      "elk.spacing.edgeNode": "18",
-      "elk.spacing.edgeEdge": "11",
-      "elk.layered.nodePlacement.strategy": "BRANDES_KOEPF",
-      "elk.layered.nodePlacement.bk.fixedAlignment": "BALANCED",
-      "elk.layered.considerModelOrder.strategy": "NODES_AND_EDGES",
-      "elk.layered.crossingMinimization.forceNodeModelOrder": "false",
-    },
-    children: j.steps.map((s) => {
-      const box = size(s, title(s));
-      // A folded failure keeps a port of its own, so its stub is spaced among the wires and never lands on one.
-      const south = [...s.next.map((n, i) => ({ id: `${s.id}>${n.to}#${i}`, layoutOptions: { "elk.port.side": "SOUTH" } })), ...(folded(s) ? [{ id: `${s.id}!`, layoutOptions: { "elk.port.side": "SOUTH" } }] : [])];
-      return {
-        id: s.id, ...box,
-        // Every wire arrives at one port, so many inbound branches read as a merge and not as a comb.
-        ports: [{ id: `${s.id}^`, layoutOptions: { "elk.port.side": "NORTH" } }, ...south],
-        layoutOptions: { "elk.portConstraints": "FIXED_SIDE" },
-      };
-    }),
-    edges: j.steps.flatMap((s) => s.next.filter((n) => j.steps.some((x) => x.id === n.to)).map((n) => {
-      const i = s.next.indexOf(n), text = when(n);
-      return { id: `${s.id}>${n.to}`, sources: [`${s.id}>${n.to}#${i}`], targets: [`${n.to}^`], labels: text ? [{ id: `${s.id}>${n.to}~`, text, ...whenSize(text) }] : [] };
-    })),
+/** Where a step shown on this page really lives. Its key is `s.id`, or `outer/inner` once a subflow is opened in place. */
+export interface Origin { journey: ViewJourney; step: ViewStep; prefix: string; callers: string[]; path: string[] }
+export interface Inlined { steps: ViewStep[]; within: Map<string, string>; origin: Map<string, Origin> }
+
+/** The steps above each key, outermost first: a link to an inner step has to open every box around it. */
+export const groupsAround = (key: string) => key.split("/").slice(0, -1).map((_, i, all) => all.slice(0, i + 1).join("/"));
+
+/**
+ * One flat list of what the page shows, with the steps of each opened subflow right after it and their ids prefixed, so the
+ * same flow opened from two places stays two sets of nodes. A flow that is already open further out never opens inside itself.
+ */
+export function inlineFlows(root: ViewJourney, atlas: Pick<Atlas, "journeys">, open: Set<string>, keep: (j: ViewJourney) => ViewJourney = (j) => j): Inlined {
+  const steps: ViewStep[] = [], within = new Map<string, string>(), origin = new Map<string, Origin>();
+  const add = (j: ViewJourney, prefix: string, callers: string[], path: string[]) => {
+    for (const s of keep(j).steps) {
+      const key = prefix + s.id;
+      steps.push({ ...s, id: key, next: s.next.map((n) => ({ ...n, to: prefix + n.to })) });
+      origin.set(key, { journey: j, step: j.steps.find((x) => x.id === s.id) ?? s, prefix, callers, path });
+      if (prefix) within.set(key, prefix.slice(0, -1));
+      const inner = s.subflow && open.has(key) && !path.includes(s.subflow) ? atlas.journeys.find((x) => x.id === s.subflow) : undefined;
+      if (inner?.steps.length) add(inner, `${key}/`, [...callers, `${j.id}/${s.id}`], [...path, inner.id]);
+    }
   };
+  add(root, "", [], [root.id]);
+  return { steps, within, origin };
+}
+
+const OPTIONS = {
+  "elk.algorithm": "layered",
+  "elk.direction": "DOWN",
+  // The router only fixes where a wire crosses each layer; `wirePath` draws the curve between those points.
+  "elk.edgeRouting": "POLYLINE",
+  "elk.edgeLabels.placement": "CENTER",
+  "elk.layered.edgeLabels.sideSelection": "ALWAYS_DOWN",
+  "elk.layered.spacing.nodeNodeBetweenLayers": "52",
+  "elk.layered.spacing.edgeNodeBetweenLayers": "24",
+  "elk.layered.spacing.edgeEdgeBetweenLayers": "11",
+  "elk.spacing.nodeNode": "26",
+  "elk.spacing.edgeNode": "18",
+  "elk.spacing.edgeEdge": "11",
+  "elk.layered.nodePlacement.strategy": "BRANDES_KOEPF",
+  "elk.layered.nodePlacement.bk.fixedAlignment": "BALANCED",
+  "elk.layered.considerModelOrder.strategy": "NODES_AND_EDGES",
+  "elk.layered.crossingMinimization.forceNodeModelOrder": "false",
+};
+
+/**
+ * Layers give "when", the branch gives "where". Node order follows `next`, so the main path stays leftmost.
+ * An opened subflow is a node with its own graph inside, so the wires into and out of it do not change at all.
+ */
+export async function layoutFlow(j: ViewJourney, title: (s: ViewStep) => string, when: (n: ViewStep["next"][number]) => string | undefined = () => undefined, folded: (s: ViewStep) => number = () => 0, within: ReadonlyMap<string, string> = new Map()) {
+  const ids = new Set(j.steps.map((s) => s.id));
+  const inside = new Map<string | undefined, ViewStep[]>();
+  for (const s of j.steps) inside.set(within.get(s.id), [...(inside.get(within.get(s.id)) ?? []), s]);
+  const wires = (list: ViewStep[]) => list.flatMap((s) => s.next.filter((n) => ids.has(n.to)).map((n) => {
+    const i = s.next.indexOf(n), text = when(n);
+    return { id: `${s.id}>${n.to}`, sources: [`${s.id}>${n.to}#${i}`], targets: [`${n.to}^`], labels: text ? [{ id: `${s.id}>${n.to}~`, text, ...whenSize(text) }] : [] };
+  }));
+  const node = (s: ViewStep): ElkNode => {
+    // A folded failure keeps a port of its own, so its stub is spaced among the wires and never lands on one.
+    const south = [...s.next.map((n, i) => ({ id: `${s.id}>${n.to}#${i}`, layoutOptions: { "elk.port.side": "SOUTH" } })), ...(folded(s) ? [{ id: `${s.id}!`, layoutOptions: { "elk.port.side": "SOUTH" } }] : [])];
+    // Every wire arrives at one port, so many inbound branches read as a merge and not as a comb.
+    const ports = [{ id: `${s.id}^`, layoutOptions: { "elk.port.side": "NORTH" } }, ...south];
+    const kids = inside.get(s.id);
+    if (!kids) return { id: s.id, ...size(s, title(s)), ports, layoutOptions: { "elk.portConstraints": "FIXED_SIDE" } };
+    return {
+      id: s.id, ports, children: kids.map(node), edges: wires(kids),
+      layoutOptions: {
+        ...OPTIONS, "elk.portConstraints": "FIXED_SIDE", "elk.padding": `[top=${GROUP_HEAD},left=${GROUP_PAD},bottom=${GROUP_PAD},right=${GROUP_PAD}]`,
+        "elk.nodeSize.constraints": "MINIMUM_SIZE", "elk.nodeSize.minimum": `(${GROUP_MIN_W},${GROUP_HEAD * 2})`, "elk.contentAlignment": "[H_CENTER, V_TOP]",
+      },
+    };
+  };
+  const top = inside.get(undefined) ?? [];
+  const input: ElkNode = { id: "root", layoutOptions: OPTIONS, children: top.map(node), edges: wires(top) };
   const graph = await elk.layout(input);
-  const pos = new Map<string, Placed>((graph.children ?? []).map((n) => [n.id, { x: n.x ?? 0, y: (n.y ?? 0) + INTRO_H, width: n.width ?? CARD_W, height: n.height ?? ACTION_H, stub: n.ports?.find((p) => p.id === `${n.id}!`)?.x }]));
+  const pos = new Map<string, Placed>();
   const routes = new Map<string, Point[]>();
   const labels = new Map<string, WhenBox>();
-  for (const e of (graph.edges ?? []) as ElkExtendedEdge[]) {
-    const sec = e.sections?.[0];
-    if (!sec) continue;
-    const points = [sec.startPoint, ...(sec.bendPoints ?? []), sec.endPoint].map((p): Point => [p.x, p.y + INTRO_H]);
-    routes.set(e.id, points);
-    const l = e.labels?.[0];
-    if (!l?.text) continue;
-    // ELK sets a label beside its wire, where two neighbours can claim it. Centred on the wire, it has one owner.
-    const width = l.width ?? WHEN_W, height = l.height ?? WHEN_LINE, y = (l.y ?? 0) + INTRO_H;
-    labels.set(e.id, { text: l.text, x: wireX(points, y + height / 2) - width / 2, y, width, height });
-  }
+  // ELK reports what is inside a node relative to that node, and the page needs one coordinate system.
+  const place = (box: ElkNode, dx: number, dy: number) => {
+    for (const n of box.children ?? []) {
+      const x = (n.x ?? 0) + dx, y = (n.y ?? 0) + dy;
+      pos.set(n.id, { x, y, width: n.width ?? CARD_W, height: n.height ?? ACTION_H, stub: n.ports?.find((p) => p.id === `${n.id}!`)?.x });
+      place(n, x, y);
+    }
+    for (const e of (box.edges ?? []) as ElkExtendedEdge[]) {
+      const sec = e.sections?.[0];
+      if (!sec) continue;
+      const points = [sec.startPoint, ...(sec.bendPoints ?? []), sec.endPoint].map((p): Point => [p.x + dx, p.y + dy]);
+      routes.set(e.id, points);
+      const l = e.labels?.[0];
+      if (!l?.text) continue;
+      // ELK sets a label beside its wire, where two neighbours can claim it. Centred on the wire, it has one owner.
+      const width = l.width ?? WHEN_W, height = l.height ?? WHEN_LINE, y = (l.y ?? 0) + dy;
+      labels.set(e.id, { text: l.text, x: wireX(points, y + height / 2) - width / 2, y, width, height });
+    }
+  };
+  place(graph, 0, INTRO_H);
   return { pos, routes, labels, width: graph.width ?? CARD_W, height: (graph.height ?? 0) + INTRO_H };
 }
 

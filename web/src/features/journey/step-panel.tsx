@@ -1,8 +1,9 @@
 import { useState, type ReactNode } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { useRouter } from "@tanstack/react-router";
-import { ArrowRight, ChevronLeft, ChevronRight, CornerUpLeft } from "lucide-react";
+import { ArrowRight, ChevronLeft, ChevronRight, ChevronUp, CornerUpLeft } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { Kbd } from "@/components/ui/kbd";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { LANE_NAME, LANE_ZH } from "@/components/shell/icons";
 import { Empty, Section } from "@/components/shell/section";
@@ -10,7 +11,7 @@ import { inlineCode, Prose } from "@/components/shell/prose";
 import { Groups } from "@/features/inspector/link-groups";
 import { StepLogic } from "@/features/logic/logic-view";
 import { WIRE } from "@/features/journey/diagram";
-import { tableHues, tableOf } from "@/features/journey/layout";
+import { tableOf } from "@/features/journey/layout";
 import { TestMark } from "@/features/journey/step-card";
 import { entityQuery, sourceQuery, type Atlas, type EntityView, type ViewJourney, type ViewStep } from "@/lib/api";
 import { driftCopy, type DriftItem } from "@/lib/drift";
@@ -62,8 +63,10 @@ function Trust({ step, drift }: { step: ViewStep; drift?: DriftItem }) {
   );
 }
 
-export function StepPanel({ journey, atlas, step, trail, via, drift, onGo, onEnter, onReturn, onModule, onPreview }: {
-  journey: ViewJourney; atlas: Atlas; step: ViewStep; trail: string[]; via: string[]; drift?: DriftItem; onGo: (id: string) => void;
+export function StepPanel({ journey, atlas, step, trail, via, drift, hues, room, onGo, onEnter, onReturn, onModule, onPreview }: {
+  journey: ViewJourney; atlas: Atlas; step: ViewStep; trail: string[]; via: string[]; drift?: DriftItem; hues: Map<string, number>;
+  /** The opened subflow this step sits in. Its pill can be a long way up the page, so it can be shut from here too. */
+  room?: { title: string; onFold: () => void }; onGo: (id: string) => void;
   onEnter: (sub: string) => void; onReturn: (j: string, s: string, via: string[]) => void; onModule: (id: string) => void; onPreview: (id: string | null) => void;
 }) {
   const { lang, t } = useLang();
@@ -95,9 +98,13 @@ export function StepPanel({ journey, atlas, step, trail, via, drift, onGo, onEnt
   const anchors = view?.anchors ?? step.claim.refs.map((r) => ({ path: r.path, line: r.startLine, endLine: r.endLine, fn: null, label: null }));
   const failure = step.kind === "failure";
   const zh = lang === "zh" ? step.zh : undefined;
-  const hues = tableHues(journey);
   return (
     <aside aria-label={t("步骤", "Step")} className="flex h-full min-w-0 flex-col">
+      {room && (
+        <button onClick={room.onFold} className="flex shrink-0 items-center gap-1.5 border-b px-6 py-2 text-left text-caption text-muted-foreground transition-colors duration-150 ease-out hover:bg-muted hover:text-foreground">
+          <ChevronUp size={14} aria-hidden className="shrink-0" /><span className="truncate">{t(`收起 ${room.title}`, `Collapse ${room.title}`)}</span>
+        </button>
+      )}
       <div className="flex shrink-0 items-center gap-2 pt-4 pr-3 pl-6">
         <span className="flex min-w-0 items-center gap-1 font-mono text-caption text-muted-foreground">
           {t(LANE_ZH[step.lane], (LANE_NAME[step.lane] ?? "").toLowerCase())}<span aria-hidden>·</span>
@@ -169,7 +176,7 @@ export function StepPanel({ journey, atlas, step, trail, via, drift, onGo, onEnt
                     return (
                       <button key={n.to} onMouseEnter={() => onPreview(n.to)} onFocus={() => onPreview(n.to)} onBlur={() => onPreview(null)} onClick={() => { onPreview(null); onGo(n.to); }}
                         className={cn("group/next relative grid w-full gap-px rounded-[4px] py-1.5 pr-8 pl-2 text-left transition-colors duration-150 ease-out hover:bg-muted", n.failure && "text-destructive")}>
-                        {step.next.length > 1 && i < 9 && <kbd aria-hidden className="absolute top-2 right-2 font-mono text-caption text-muted-foreground tabular-nums max-md:hidden">{i + 1}</kbd>}
+                        {step.next.length > 1 && i < 9 && <Kbd aria-hidden className="absolute top-1/2 right-1.5 -translate-y-1/2 font-mono tabular-nums group-hover/next:bg-background max-md:hidden">{i + 1}</Kbd>}
                         {when && <span className="text-ui">{when}</span>}
                         <span className={cn("flex min-w-0 items-center gap-1.5", when ? "text-caption" : "text-ui font-medium", when && !n.failure && "text-muted-foreground")}>
                           <ArrowRight size={12} aria-hidden className="shrink-0 transition-transform duration-150 ease-out group-hover/next:translate-x-0.5" /><span className="min-w-0 truncate">{name}</span>
